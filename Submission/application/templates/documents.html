@@ -62,46 +62,270 @@
 </div>
 
 <div class="card" style="margin-top: 30px;">
-    <h2>Recent Submissions</h2>
-    {% if recent_submissions %}
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Customer</th>
-                <th>Process</th>
-                <th>Document Type</th>
-                <th>Upload Date</th>
-                <th>Status</th>
-                <th>File</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for submission in recent_submissions %}
-            <tr>
-                <td>{{ submission.customer_name }}</td>
-                <td>{{ submission.process_name }}</td>
-                <td>{{ submission.document_type_name }}</td>
-                <td>{{ submission.upload_date.split(' ')[0] }}</td>
-                <td>
-                    <span class="status-badge status-{{ submission.validation_status }}">
-                        {{ submission.validation_status|title }}
-                    </span>
-                </td>
-                <td>
-                    <a href="{{ submission.file_url }}" target="_blank" style="color: #667eea;">View</a>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p style="text-align: center; color: #666; padding: 40px;">No documents submitted yet.</p>
-    {% endif %}
+    <div class="recent-submissions mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2>Recent Document Submissions</h2>
+                <br>
+            <div class="btn-group" role="group">
+                <button class="btn btn-sm btn-outline-primary" onclick="refreshSubmissions()"><i class="fas fa-sync-alt"></i> Refresh</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="filterSubmissions('all')">All</button>
+                <button class="btn btn-sm btn-outline-warning" onclick="filterSubmissions('pending')">Pending</button>
+                <button class="btn btn-sm btn-outline-success" onclick="filterSubmissions('approved')">Approved</button>
+                <button class="btn btn-sm btn-outline-danger" onclick="filterSubmissions('rejected')">Rejected</button>
+            </div>
+    </div>
+    
+    <div class="table-responsive">
+        <table class="table table-hover">
+            <thead class="table-light">
+                <tr>
+                    <th>Customer</th>
+                    <th>Process</th>
+                    <th>Document Type</th>
+                    <th>Upload Date</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="submissions-tbody">
+                {% for submission in recent_submissions %}
+                <tr class="submission-row" data-status="{{ submission.validation_status }}">
+                    <td>
+                        <div>
+                            <strong>{{ submission.customer_name or submission.customer_email.split('@')[0]|title }}</strong>
+                            {% if submission.customer_name != submission.customer_email.split('@')[0]|title %}
+                            <br><small class="text-muted">{{ submission.customer_email }}</small>
+                            {% endif %}
+                        </div>
+                    </td>
+                    <td>{{ submission.process_name }}</td>
+                    <td>
+                        <span class="badge badge-info">{{ submission.document_type_name }}</span>
+                    </td>
+                    <td>
+                        <small>{{ submission.upload_date[:16].replace('T', ' ') if submission.upload_date else 'N/A' }}</small>
+                    </td>
+                    <td>
+                        <span class="status-badge badge 
+                            {{ 'badge-success' if submission.validation_status == 'approved' 
+                               else ('badge-warning' if submission.validation_status == 'pending' 
+                               else 'badge-danger') }}">
+                            <i class="fas {{ 'fa-check-circle' if submission.validation_status == 'approved' 
+                                           else ('fa-clock' if submission.validation_status == 'pending' 
+                                           else 'fa-times-circle') }}"></i>
+                            {{ submission.validation_status|title }}
+                        </span>
+                    </td>
+                    <td>
+                        <div class="action-buttons">
+                            <!-- View/Download button -->
+                            {% if submission.file_url %}
+                            <button class="btn btn-sm btn-outline-info" onclick="viewDocument('{{ submission.file_url }}')" title="View Document">
+                                <i class="fas fa-eye"></i> View
+                            </button>
+                            {% endif %}
+                            
+                            <!-- Status change buttons -->
+                            {% if submission.validation_status != 'approved' %}
+                            <form style="display: inline;" method="POST" action="/update_document_status" 
+                                  onsubmit="return confirmStatusChange('{{ submission.customer_name }}', '{{ submission.document_type_name }}', 'approved')">
+                                <input type="hidden" name="submission_id" value="{{ submission.id }}">
+                                <input type="hidden" name="new_status" value="approved">
+                                <button type="submit" class="btn btn-sm btn-success" title="Approve Document">
+                                    <i class="fas fa-check"></i> Approve
+                                </button>
+                            </form>
+                            {% endif %}
+                            
+                            {% if submission.validation_status != 'pending' %}
+                            <form style="display: inline;" method="POST" action="/update_document_status"
+                                  onsubmit="return confirmStatusChange('{{ submission.customer_name }}', '{{ submission.document_type_name }}', 'pending')">
+                                <input type="hidden" name="submission_id" value="{{ submission.id }}">
+                                <input type="hidden" name="new_status" value="pending">
+                                <button type="submit" class="btn btn-sm btn-warning" title="Set to Pending">
+                                    <i class="fas fa-clock"></i>pending
+                                </button>
+                            </form>
+                            {% endif %}
+                            
+                            {% if submission.validation_status != 'rejected' %}
+                            <form style="display: inline;" method="POST" action="/update_document_status"
+                                  onsubmit="return confirmStatusChange('{{ submission.customer_name }}', '{{ submission.document_type_name }}', 'rejected')">
+                                <input type="hidden" name="submission_id" value="{{ submission.id }}">
+                                <input type="hidden" name="new_status" value="rejected">
+                                <button type="submit" class="btn btn-sm btn-danger" title="Reject Document">
+                                    <i class="fas fa-times"></i>    Reject
+                                </button>
+                            </form>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        {% if not recent_submissions %}
+        <div class="text-center py-4">
+            <i class="fas fa-file-alt fa-3x text-muted mb-3"></i>
+            <p class="text-muted">No document submissions yet.</p>
+        </div>
+        {% endif %}
+    </div>
 </div>
-{% endblock %}
 
-{% block scripts %}
+<style>
+.recent-submissions {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 20px;
+}
+
+.status-badge {
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 15px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.action-buttons {
+    display: flex;
+    gap: 5px;
+    justify-content: center;
+}
+
+.action-buttons .btn {
+    min-width: 35px;
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(0,123,255,.075);
+}
+
+.badge-info {
+    color: #17a2b8;
+}
+
+/* Filtering styles */
+.submission-row.hidden {
+    display: none;
+}
+
+/* Status-specific row highlighting */
+.submission-row[data-status="approved"] {
+    border-left: 4px solid #28a745;
+}
+
+.submission-row[data-status="pending"] {
+    border-left: 4px solid #ffc107;
+}
+
+.submission-row[data-status="rejected"] {
+    border-left: 4px solid #dc3545;
+}
+</style>
+
 <script>
+function confirmStatusChange(customerName, documentType, newStatus) {
+    const messages = {
+        'approved': `Are you sure you want to APPROVE the ${documentType} document for ${customerName}?`,
+        'pending': `Are you sure you want to set the ${documentType} document for ${customerName} to PENDING?`,
+        'rejected': `Are you sure you want to REJECT the ${documentType} document for ${customerName}?`
+    };
+    
+    return confirm(messages[newStatus] || 'Are you sure you want to change the status?');
+}
+
+function viewDocument(fileUrl) {
+    if (fileUrl) {
+        // Open in new tab/window
+        window.open(fileUrl, '_blank');
+    } else {
+        alert('Document URL not available');
+    }
+}
+
+function refreshSubmissions() {
+    // Add loading state
+    const refreshBtn = document.querySelector('button[onclick="refreshSubmissions()"]');
+    const originalHtml = refreshBtn.innerHTML;
+    refreshBtn.innerHTML = '<i class="fas fa-spin fa-spinner"></i> Refreshing...';
+    refreshBtn.disabled = true;
+    
+    // Reload the page after a short delay
+    setTimeout(() => {
+        window.location.reload();
+    }, 500);
+}
+
+function filterSubmissions(status) {
+    const rows = document.querySelectorAll('.submission-row');
+    const buttons = document.querySelectorAll('.btn-group .btn');
+    
+    // Update button states
+    buttons.forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+    
+    // Filter rows
+    rows.forEach(row => {
+        if (status === 'all') {
+            row.classList.remove('hidden');
+        } else {
+            if (row.dataset.status === status) {
+                row.classList.remove('hidden');
+            } else {
+                row.classList.add('hidden');
+            }
+        }
+    });
+    
+    // Update visible count
+    const visibleRows = document.querySelectorAll('.submission-row:not(.hidden)').length;
+    const totalRows = rows.length;
+    
+    // Show/hide no results message
+    const tbody = document.getElementById('submissions-tbody');
+    let noResultsMsg = document.getElementById('no-results-filter');
+    
+    if (visibleRows === 0 && totalRows > 0) {
+        if (!noResultsMsg) {
+            noResultsMsg = document.createElement('tr');
+            noResultsMsg.id = 'no-results-filter';
+            noResultsMsg.innerHTML = '<td colspan="7" class="text-center py-4 text-muted">No submissions match the selected filter.</td>';
+            tbody.appendChild(noResultsMsg);
+        }
+    } else if (noResultsMsg) {
+        noResultsMsg.remove();
+    }
+}
+
+// Auto-refresh submissions every 60 seconds
+setInterval(function() {
+    if (!document.hidden) {
+        fetch(window.location.href)
+            .then(response => response.text())
+            .then(html => {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                const newTbody = doc.querySelector('#submissions-tbody');
+                if (newTbody) {
+                    document.querySelector('#submissions-tbody').innerHTML = newTbody.innerHTML;
+                }
+            })
+            .catch(console.error);
+    }
+}, 60000); // 60 seconds
+
+// Initialize filter - show all by default
+document.addEventListener('DOMContentLoaded', function() {
+    const allBtn = document.querySelector('button[onclick="filterSubmissions(\'all\')"]');
+    if (allBtn) allBtn.classList.add('active');
+});
+
+
 function updateRequiredDocs() {
     const customerProcess = document.getElementById('customer_process').value;
     const documentTypeSelect = document.getElementById('document_type_id');
@@ -161,5 +385,7 @@ function updateRequiredFields() {
         extractedDataSection.style.display = 'none';
     }
 }
+
+
 </script>
 {% endblock %}

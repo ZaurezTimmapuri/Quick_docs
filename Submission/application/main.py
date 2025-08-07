@@ -32,32 +32,51 @@ def init_database():
     conn.commit()
     conn.close()
 
-def calculate_completion_percentage(customer_id, process_id):
+def calculate_completion_percentage(customer_id, process_id, conn=None):
     """Calculate completion percentage for a process assignment"""
-    conn = get_db_connection()
+    should_close_conn = False
     
-    # Get required documents for the process
-    required_docs = conn.execute('''
-        SELECT COUNT(*) as total
-        FROM process_document_requirements pdr
-        WHERE pdr.process_id = ? AND pdr.is_required = 1
-    ''', (process_id,)).fetchone()
+    if conn is None:
+        conn = get_db_connection()
+        should_close_conn = True
     
-    # Get submitted and approved documents
-    submitted_docs = conn.execute('''
-        SELECT COUNT(*) as submitted
-        FROM document_submissions ds
-        WHERE ds.customer_id = ? AND ds.process_id = ? AND ds.validation_status = 'approved'
-    ''', (customer_id, process_id)).fetchone()
-    
-    conn.close()
-    
-    if required_docs['total'] == 0:
-        return 0
-    
-    percentage = (submitted_docs['submitted'] / required_docs['total']) * 100
-    return min(100, int(percentage))
-
+    try:
+        # Get required documents for the process
+        required_docs = conn.execute('''
+            SELECT COUNT(*) as total
+            FROM process_document_requirements pdr
+            WHERE pdr.process_id = ? AND pdr.is_required = 1
+        ''', (process_id,)).fetchone()
+        
+        # Get submitted and approved documents
+        submitted_docs = conn.execute('''
+            SELECT COUNT(*) as submitted
+            FROM document_submissions ds
+            WHERE ds.customer_id = ? AND ds.process_id = ? AND ds.validation_status = 'approved'
+        ''', (customer_id, process_id)).fetchone()
+        
+        if required_docs['total'] == 0:
+            percentage = 0
+        else:
+            percentage = (submitted_docs['submitted'] / required_docs['total']) * 100
+            percentage = min(100, int(percentage))
+        
+        # Update the process assignment with the new percentage and status
+        status = 'completed' if percentage == 100 else 'pending'
+        conn.execute('''
+            UPDATE process_assignments 
+            SET completion_percentage = ?, status = ?
+            WHERE customer_id = ? AND process_id = ?
+        ''', (percentage, status, customer_id, process_id))
+        
+        if should_close_conn:
+            conn.commit()
+        
+        return percentage
+        
+    finally:
+        if should_close_conn:
+            conn.close()
 @app.route('/')
 def index():
     """Home page"""
@@ -72,7 +91,7 @@ def customers():
     conn.close()
     return render_template('customers.html', customers=customers, processes=processes)
 
-@app.route('/add_customer', methods=['POST'])
+@app.route('/add_customer', methods=['POST'])       
 def add_customer():
     """Add new customer"""
     name = request.form['name']
@@ -110,7 +129,7 @@ def documents():
     """Document Submission Page"""
     conn = get_db_connection()
     
-    # Get customers with their process assignments
+   # Get customers with their process assignments
     customers_data = conn.execute('''
         SELECT c.id, c.name, p.id as process_id, p.name as process_name
         FROM customers c
@@ -119,19 +138,34 @@ def documents():
         WHERE pa.status = 'pending'
         ORDER BY c.name
     ''').fetchall()
-    
+
     # Get document types
     document_types = conn.execute('SELECT * FROM document_types ORDER BY name').fetchall()
     
-    # Get recent submissions
+    # Get recent submissions with more details for status management
     recent_submissions = conn.execute('''
-        SELECT ds.*, c.name as customer_name, p.name as process_name, dt.name as document_type_name
+        SELECT 
+            ds.id,
+            ds.customer_id,
+            ds.process_id,
+            ds.document_type_id,
+            ds.upload_date,
+            ds.validation_status,
+            ds.file_url,
+            c.name as customer_name,
+            c.email as customer_email,
+            p.name as process_name,
+            dt.name as document_type_name,
+            -- Check if this document is required for the process
+            CASE WHEN pdr.is_required = 1 THEN 'Required' ELSE 'Optional' END as requirement_status
         FROM document_submissions ds
         JOIN customers c ON ds.customer_id = c.id
         JOIN processes p ON ds.process_id = p.id
         JOIN document_types dt ON ds.document_type_id = dt.id
+        LEFT JOIN process_document_requirements pdr ON ds.process_id = pdr.process_id 
+                                                    AND ds.document_type_id = pdr.document_type_id
         ORDER BY ds.upload_date DESC
-        LIMIT 10
+        LIMIT 20
     ''').fetchall()
     
     conn.close()
@@ -139,6 +173,8 @@ def documents():
                          customers_data=customers_data, 
                          document_types=document_types,
                          recent_submissions=recent_submissions)
+
+
 
 @app.route('/get_required_documents')
 def get_required_documents():
@@ -158,7 +194,7 @@ def get_required_documents():
 
 @app.route('/submit_document', methods=['POST'])
 def submit_document():
-    """Submit document"""
+    """Submit document with proper database connection handling"""
     customer_id = request.form['customer_id']
     process_id = request.form['process_id']
     document_type_id = request.form['document_type_id']
@@ -177,18 +213,13 @@ def submit_document():
             VALUES (?, ?, ?, ?, ?, 'pending')
         ''', (customer_id, process_id, document_type_id, file_url, json.dumps(ocr_data)))
         
-        # Update completion percentage
-        completion = calculate_completion_percentage(customer_id, process_id)
-        status = 'completed' if completion == 100 else 'pending'
+        # Update completion percentage using the same connection
+        calculate_completion_percentage(customer_id, process_id, conn)
         
-        conn.execute('''
-            UPDATE process_assignments 
-            SET completion_percentage = ?, status = ?
-            WHERE customer_id = ? AND process_id = ?
-        ''', (completion, status, customer_id, process_id))
-        
+        # Commit all changes together
         conn.commit()
         flash('Document submitted successfully!', 'success')
+        
     except json.JSONDecodeError:
         flash('Invalid JSON data in extracted fields!', 'error')
     except Exception as e:
@@ -212,19 +243,99 @@ def dashboard():
             pa.assignment_date,
             pa.status,
             pa.completion_percentage,
-            COUNT(ds.id) as documents_submitted,
-            COUNT(pdr.id) as documents_required
+            (SELECT COUNT(*) FROM document_submissions ds 
+             WHERE ds.customer_id = pa.customer_id 
+             AND ds.process_id = pa.process_id 
+             AND ds.validation_status = 'approved') as documents_submitted,
+            (SELECT COUNT(*) FROM process_document_requirements pdr 
+             WHERE pdr.process_id = pa.process_id 
+             AND pdr.is_required = 1) as documents_required
         FROM process_assignments pa
         JOIN customers c ON pa.customer_id = c.id
         JOIN processes p ON pa.process_id = p.id
-        LEFT JOIN document_submissions ds ON pa.customer_id = ds.customer_id AND pa.process_id = ds.process_id
-        LEFT JOIN process_document_requirements pdr ON pa.process_id = pdr.process_id AND pdr.is_required = 1
-        GROUP BY pa.id, c.name, p.name, pa.assignment_date, pa.status, pa.completion_percentage
         ORDER BY pa.assignment_date DESC
     ''').fetchall()
     
     conn.close()
     return render_template('dashboard.html', assignments=assignments)
+
+@app.route('/update_document_status', methods=['POST'])
+def update_document_status():
+    """Update document validation status and recalculate progress"""
+    try:
+        submission_id = request.form['submission_id']
+        new_status = request.form['new_status']
+        
+        # Validate the new status
+        if new_status not in ['pending', 'approved', 'rejected']:
+            flash('Invalid status provided!', 'error')
+            return redirect(url_for('documents'))
+        
+        conn = get_db_connection()
+        
+        # Get the document submission details first
+        submission = conn.execute('''
+            SELECT customer_id, process_id, validation_status
+            FROM document_submissions 
+            WHERE id = ?
+        ''', (submission_id,)).fetchone()
+        
+        if not submission:
+            flash('Document submission not found!', 'error')
+            return redirect(url_for('documents'))
+        
+        # Update the document status
+        conn.execute('''
+            UPDATE document_submissions 
+            SET validation_status = ?, upload_date = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (new_status, submission_id))
+        
+        # Recalculate completion percentage for this customer-process combination
+        calculate_completion_percentage(submission['customer_id'], submission['process_id'], conn)
+        
+        conn.commit()
+        conn.close()
+        
+        # Create appropriate flash message
+        status_messages = {
+            'approved': 'Document approved successfully!',
+            'pending': 'Document set to pending review.',
+            'rejected': 'Document rejected.'
+        }
+        
+        flash(status_messages.get(new_status, 'Document status updated!'), 'success')
+        
+    except Exception as e:
+        flash(f'Error updating document status: {str(e)}', 'error')
+    
+    return redirect(url_for('documents'))
+
+@app.route('/recalculate_progress')
+def recalculate_progress():
+    """Recalculate completion percentages for all assignments"""
+    conn = get_db_connection()
+    
+    try:
+        # Get all process assignments
+        assignments = conn.execute('''
+            SELECT customer_id, process_id
+            FROM process_assignments
+        ''').fetchall()
+        
+        # Recalculate each assignment using the same connection
+        for assignment in assignments:
+            calculate_completion_percentage(assignment['customer_id'], assignment['process_id'], conn)
+        
+        conn.commit()
+        flash('All completion percentages recalculated!', 'success')
+        
+    except Exception as e:
+        flash(f'Error recalculating progress: {str(e)}', 'error')
+    finally:
+        conn.close()
+    
+    return redirect(url_for('dashboard'))
 
 @app.route('/query')
 def query_interface():
@@ -262,7 +373,6 @@ def execute_query():
             'sql': sql_query if 'sql_query' in locals() else '',
             'results': []
         })
-
 
 # Natural Language to SQL Conversion
 

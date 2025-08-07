@@ -37,9 +37,9 @@ INSERT INTO process_document_requirements (process_id, document_type_id, is_requ
 INSERT INTO process_assignments (customer_id, process_id, status, completion_percentage) VALUES
 (1, 1, 'pending', 75),    -- Rajesh Kumar - Home Loan (75% complete)
 (1, 2, 'completed', 100), -- Rajesh Kumar - KYC (completed)
-(2, 1, 'pending', 50),    -- Priya Sharma - Home Loan (50% complete)
+(2, 1, 'pending', 25),    -- Priya Sharma - Home Loan (50% complete)
 (3, 2, 'pending', 50),    -- Amit Patel - KYC (50% complete)
-(4, 1, 'pending', 25),    -- Sunita Reddy - Home Loan (25% complete)
+(4, 1, 'pending', 0),    -- Sunita Reddy - Home Loan (25% complete)
 (5, 2, 'completed', 100); -- Vikram Singh - KYC (completed)
 
 -- Insert Document Submissions
