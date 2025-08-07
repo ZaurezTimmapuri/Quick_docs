@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Document Submission</h1>
+
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Submit Document</h2>
+        <form method="POST" action="{{ url_for('submit_document') }}" id="documentForm">
+            <div class="form-group">
+                <label for="customer_process">Select Customer & Process:</label>
+                <select id="customer_process" name="customer_process" required onchange="updateRequiredDocs()">
+                    <option value="">-- Select Customer & Process --</option>
+                    {% for customer_data in customers_data %}
+                    <option value="{{ customer_data.id }}-{{ customer_data.process_id }}">
+                        {{ customer_data.name }} - {{ customer_data.process_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <input type="hidden" id="customer_id" name="customer_id">
+                <input type="hidden" id="process_id" name="process_id">
+            </div>
+            
+            <div class="form-group">
+                <label for="document_type_id">Document Type:</label>
+                <select id="document_type_id" name="document_type_id" required onchange="updateRequiredFields()">
+                    <option value="">-- Select Document Type --</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="file_url">File URL/Path:</label>
+                <input type="text" id="file_url" name="file_url" placeholder="/uploads/document.pdf" required>
+            </div>
+            
+            <div id="extractedDataSection" style="display: none;">
+                <div class="form-group">
+                    <label for="extracted_data">Extracted Data (JSON):</label>
+                    <textarea id="extracted_data" name="extracted_data" rows="6" placeholder='{"field_name": "value"}'></textarea>
+                    <small style="color: #666;">Enter the OCR extracted data in JSON format</small>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn">Submit Document</button>
+        </form>
+    </div>
+    
+    <div class="card">
+        <h2>Required Fields</h2>
+        <div id="requiredFieldsInfo">
+            <p style="color: #666;">Select a document type to see required fields</p>
+        </div>
+        
+        <h3 style="margin-top: 30px;">Document Types</h3>
+        {% for doc_type in document_types %}
+        <div style="padding: 10px; background: #f8f9fa; margin: 5px 0; border-radius: 5px;">
+            <strong>{{ doc_type.name }}</strong><br>
+            <small style="color: #666;">{{ doc_type.description }}</small>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="card" style="margin-top: 30px;">
+    <h2>Recent Submissions</h2>
+    {% if recent_submissions %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Customer</th>
+                <th>Process</th>
+                <th>Document Type</th>
+                <th>Upload Date</th>
+                <th>Status</th>
+                <th>File</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for submission in recent_submissions %}
+            <tr>
+                <td>{{ submission.customer_name }}</td>
+                <td>{{ submission.process_name }}</td>
+                <td>{{ submission.document_type_name }}</td>
+                <td>{{ submission.upload_date.split(' ')[0] }}</td>
+                <td>
+                    <span class="status-badge status-{{ submission.validation_status }}">
+                        {{ submission.validation_status|title }}
+                    </span>
+                </td>
+                <td>
+                    <a href="{{ submission.file_url }}" target="_blank" style="color: #667eea;">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="text-align: center; color: #666; padding: 40px;">No documents submitted yet.</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function updateRequiredDocs() {
+    const customerProcess = document.getElementById('customer_process').value;
+    const documentTypeSelect = document.getElementById('document_type_id');
+    
+    if (!customerProcess) {
+        documentTypeSelect.innerHTML = '<option value="">-- Select Document Type --</option>';
+        return;
+    }
+    
+    const [customerId, processId] = customerProcess.split('-');
+    document.getElementById('customer_id').value = customerId;
+    document.getElementById('process_id').value = processId;
+    
+    // Fetch required documents for this process
+    fetch(`/get_required_documents?process_id=${processId}`)
+        .then(response => response.json())
+        .then(documents => {
+            documentTypeSelect.innerHTML = '<option value="">-- Select Document Type --</option>';
+            documents.forEach(doc => {
+                const option = document.createElement('option');
+                option.value = doc.id;
+                option.textContent = doc.name;
+                option.dataset.requiredFields = doc.required_fields;
+                documentTypeSelect.appendChild(option);
+            });
+        });
+}
+
+function updateRequiredFields() {
+    const select = document.getElementById('document_type_id');
+    const selectedOption = select.options[select.selectedIndex];
+    const requiredFieldsInfo = document.getElementById('requiredFieldsInfo');
+    const extractedDataSection = document.getElementById('extractedDataSection');
+    const extractedDataTextarea = document.getElementById('extracted_data');
+    
+    if (selectedOption.dataset.requiredFields) {
+        const fields = JSON.parse(selectedOption.dataset.requiredFields);
+        let fieldsHtml = '<h4>Required Fields:</h4><ul>';
+        
+        // Create sample JSON structure
+        let sampleJson = {};
+        for (const [field, type] of Object.entries(fields)) {
+            fieldsHtml += `<li><strong>${field}</strong> (${type})</li>`;
+            sampleJson[field] = type === 'string' ? 'sample_value' : 
+                               type === 'number' ? 0 : 
+                               type === 'date' ? '2024-01-01' : 'value';
+        }
+        
+        fieldsHtml += '</ul>';
+        requiredFieldsInfo.innerHTML = fieldsHtml;
+        
+        // Show extracted data section with sample
+        extractedDataSection.style.display = 'block';
+        extractedDataTextarea.placeholder = JSON.stringify(sampleJson, null, 2);
+    } else {
+        requiredFieldsInfo.innerHTML = '<p style="color: #666;">Select a document type to see required fields</p>';
+        extractedDataSection.style.display = 'none';
+    }
+}
+</script>
+{% endblock %}

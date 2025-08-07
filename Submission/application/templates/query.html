@@ -1,0 +1,229 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>AI Query Interface</h1>
+
+<div class="grid grid-2">
+    <div class="card">
+        <h2>Natural Language Query</h2>
+        <form id="queryForm">
+            <div class="form-group">
+                <label for="query">Ask a question:</label>
+                <textarea id="query" placeholder="e.g., Show all customers" rows="3" style="resize: vertical;"></textarea>
+            </div>
+            <button type="submit" class="btn">Execute Query</button>
+        </form>
+        
+        <div id="loading" style="display: none; text-align: center; margin: 20px 0;">
+            <div style="color: #667eea;">Processing query...</div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <h2>Example Queries</h2>
+        <div style="margin-bottom: 15px;">Click on any example to try it:</div>
+        
+        <div class="example-queries">
+            <div class="example-query" onclick="setQuery('Show all customers')">
+                "Show all customers"
+            </div>
+            <div class="example-query" onclick="setQuery('List all pending processes')">
+                "List all pending processes"
+            </div>
+            <div class="example-query" onclick="setQuery('How many documents has Rajesh Kumar submitted?')">
+                "How many documents has Rajesh Kumar submitted?"
+            </div>
+            <div class="example-query" onclick="setQuery('Which process has the most documents?')">
+                "Which process has the most documents?"
+            </div>
+            <div class="example-query" onclick="setQuery('Which customers are assigned to Home Loan Application?')">
+                "Which customers are assigned to Home Loan Application?"
+            </div>
+            <div class="example-query" onclick="setQuery('Show completed processes')">
+                "Show completed processes"
+            </div>
+            <div class="example-query" onclick="setQuery('Show recent submissions')">
+                "Show recent submissions"
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="results" style="display: none;">
+    <div class="card">
+        <h2>Query Results</h2>
+        <div id="sqlQuery" class="query-result">
+            <strong>Generated SQL:</strong>
+            <div class="sql-code" id="sqlCode"></div>
+        </div>
+        
+        <div id="queryResults">
+            <div id="resultsTable"></div>
+        </div>
+        
+        <div id="error" class="alert alert-error" style="display: none;"></div>
+    </div>
+</div>
+
+<style>
+.example-queries {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.example-query {
+    padding: 12px 15px;
+    background: #f8f9fa;
+    border: 1px solid #e9ecef;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-family: monospace;
+    color: #495057;
+}
+
+.example-query:hover {
+    background: #e9ecef;
+    border-color: #667eea;
+    color: #667eea;
+    transform: translateX(5px);
+}
+
+.results-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.results-table th {
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: white;
+    padding: 12px;
+    text-align: left;
+    font-weight: 600;
+}
+
+.results-table td {
+    padding: 12px;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.results-table tr:hover {
+    background: rgba(102, 126, 234, 0.05);
+}
+
+.no-results {
+    text-align: center;
+    padding: 40px;
+    color: #666;
+    font-style: italic;
+}
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function setQuery(queryText) {
+    document.getElementById('query').value = queryText;
+}
+
+document.getElementById('queryForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    const query = document.getElementById('query').value.trim();
+    if (!query) {
+        alert('Please enter a query');
+        return;
+    }
+    
+    const loading = document.getElementById('loading');
+    const results = document.getElementById('results');
+    const error = document.getElementById('error');
+    const sqlCode = document.getElementById('sqlCode');
+    const resultsTable = document.getElementById('resultsTable');
+    
+    // Show loading
+    loading.style.display = 'block';
+    results.style.display = 'none';
+    error.style.display = 'none';
+    
+    // Send query to backend
+    fetch('/execute_query', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: 'query=' + encodeURIComponent(query)
+    })
+    .then(response => response.json())
+    .then(data => {
+        loading.style.display = 'none';
+        results.style.display = 'block';
+        
+        if (data.error) {
+            error.textContent = data.error;
+            error.style.display = 'block';
+            sqlCode.textContent = data.sql || 'No SQL generated';
+            resultsTable.innerHTML = '';
+        } else {
+            error.style.display = 'none';
+            sqlCode.textContent = data.sql;
+            
+            // Display results
+            if (data.results && data.results.length > 0) {
+                let tableHtml = '<table class="results-table"><thead><tr>';
+                
+                // Add headers
+                const headers = Object.keys(data.results[0]);
+                headers.forEach(header => {
+                    tableHtml += `<th>${header.replace(/_/g, ' ').toUpperCase()}</th>`;
+                });
+                tableHtml += '</tr></thead><tbody>';
+                
+                // Add rows
+                data.results.forEach(row => {
+                    tableHtml += '<tr>';
+                    headers.forEach(header => {
+                        let value = row[header];
+                        if (value === null || value === undefined) {
+                            value = '-';
+                        } else if (typeof value === 'string' && !isNaN(Date.parse(value))) {
+                            // Format datetime
+                            value = new Date(value).toLocaleString();
+                        }
+                        tableHtml += `<td>${value}</td>`;
+                    });
+                    tableHtml += '</tr>';
+                });
+                
+                tableHtml += '</tbody></table>';
+                resultsTable.innerHTML = tableHtml;
+            } else {
+                resultsTable.innerHTML = '<div class="no-results">No results found</div>';
+            }
+        }
+    })
+    .catch(err => {
+        loading.style.display = 'none';
+        results.style.display = 'block';
+        error.textContent = 'Network error: ' + err.message;
+        error.style.display = 'block';
+        sqlCode.textContent = 'Error occurred';
+        resultsTable.innerHTML = '';
+    });
+});
+</script>
+{% endblock %}
+                documentTypeSelect.appendChild(option);
+            });
+        })
+        .catch(error => {
+            console.error('Error fetching documents:', error);
+            documentTypeSelect.innerHTML = '<option value="">Error loading documents</option>';
+        });
+}

@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h1>Welcome to QuickDocs</h1>
+
+<div style="text-align: center; margin: 40px 0;">
+    <p style="font-size: 18px; color: #666; margin-bottom: 40px;">
+        Streamline your document collection process with our intelligent system
+    </p>
+</div>
+
+<div class="grid grid-2">
+    <div class="card">
+        <h3 style="color: #667eea; margin-bottom: 15px;">📋 Customer Management</h3>
+        <p style="margin-bottom: 20px;">Register new customers and assign them to processes efficiently.</p>
+        <a href="{{ url_for('customers') }}" class="btn">Manage Customers</a>
+    </div>
+    
+    <div class="card">
+        <h3 style="color: #667eea; margin-bottom: 15px;">📄 Document Submission</h3>
+        <p style="margin-bottom: 20px;">Upload and process customer documents with OCR extraction.</p>
+        <a href="{{ url_for('documents') }}" class="btn">Submit Documents</a>
+    </div>
+    
+    <div class="card">
+        <h3 style="color: #667eea; margin-bottom: 15px;">📊 Status Dashboard</h3>
+        <p style="margin-bottom: 20px;">Monitor process completion and document validation status.</p>
+        <a href="{{ url_for('dashboard') }}" class="btn">View Dashboard</a>
+    </div>
+    
+    <div class="card">
+        <h3 style="color: #667eea; margin-bottom: 15px;">🔍 AI Query Interface</h3>
+        <p style="margin-bottom: 20px;">Ask questions in natural language and get instant insights.</p>
+        <a href="{{ url_for('query_interface') }}" class="btn btn-secondary">Try Queries</a>
+    </div>
+</div>
+
+<div style="margin-top: 50px; text-align: center;">
+    <h2>System Features</h2>
+    <div class="grid grid-3" style="margin-top: 30px;">
+        <div style="text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 15px;">🚀</div>
+            <h4>Fast Processing</h4>
+            <p>Quick document uploads and validation</p>
+        </div>
+        <div style="text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 15px;">🤖</div>
+            <h4>AI-Powered</h4>
+            <p>Natural language query interface</p>
+        </div>
+        <div style="text-align: center;">
+            <div style="font-size: 48px; margin-bottom: 15px;">📈</div>
+            <h4>Real-time Tracking</h4>
+            <p>Live progress monitoring</p>
+        </div>
+    </div>
+</div>
+{% endblock %}
