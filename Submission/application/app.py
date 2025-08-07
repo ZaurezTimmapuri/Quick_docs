@@ -1,0 +1,521 @@
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+import sqlite3
+import json
+import re
+import os
+from google import genai
+from dotenv import load_dotenv
+
+app = Flask(__name__)
+# Database configuration
+DATABASE = 'quickdocs.db'
+# Set your Gemini API key
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
+
+app.secret_key = 'Quick_docs_test_Zaurez_08-08-2025'# Set a secret key for session management
+
+def get_db_connection():
+    """Get database connection"""
+    conn = sqlite3.connect(DATABASE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_database():
+    """Initialize database with schema and sample data"""
+    conn = get_db_connection()
+    
+    # Read and execute schema
+    with open('database/schema.sql', 'r') as f:
+        conn.executescript(f.read())
+    
+    # Read and execute sample data
+    with open('database/sample_data.sql', 'r') as f:
+        conn.executescript(f.read())
+    
+    conn.commit()
+    conn.close()
+
+def configure():
+    load_dotenv()
+    """Load environment variables and configure the application"""
+
+def calculate_completion_percentage(customer_id, process_id, conn=None):
+    """Calculate completion percentage for a process assignment"""
+    should_close_conn = False
+    
+    if conn is None:
+        conn = get_db_connection()
+        should_close_conn = True
+    
+    try:
+        # Get required documents for the process
+        required_docs = conn.execute('''
+            SELECT COUNT(*) as total
+            FROM process_document_requirements pdr
+            WHERE pdr.process_id = ? AND pdr.is_required = 1
+        ''', (process_id,)).fetchone()
+        
+        # Get submitted and approved documents
+        submitted_docs = conn.execute('''
+            SELECT COUNT(*) as submitted
+            FROM document_submissions ds
+            WHERE ds.customer_id = ? AND ds.process_id = ? AND ds.validation_status = 'approved'
+        ''', (customer_id, process_id)).fetchone()
+        
+        if required_docs['total'] == 0:
+            percentage = 0
+        else:
+            percentage = (submitted_docs['submitted'] / required_docs['total']) * 100
+            percentage = min(100, int(percentage))
+        
+        # Update the process assignment with the new percentage and status
+        status = 'completed' if percentage == 100 else 'pending'
+        conn.execute('''
+            UPDATE process_assignments 
+            SET completion_percentage = ?, status = ?
+            WHERE customer_id = ? AND process_id = ?
+        ''', (percentage, status, customer_id, process_id))
+        
+        if should_close_conn:
+            conn.commit()
+        
+        return percentage
+        
+    finally:
+        if should_close_conn:
+            conn.close()
+
+@app.route('/')
+def index():
+    """Home page"""
+    return render_template('index.html')
+
+@app.route('/customers')
+def customers():
+    """Customer Registration Page"""
+    conn = get_db_connection()
+    customers = conn.execute('SELECT * FROM customers ORDER BY registration_date DESC').fetchall()
+    processes = conn.execute('SELECT * FROM processes WHERE status = "active"').fetchall()
+    conn.close()
+    return render_template('customers.html', customers=customers, processes=processes)
+
+@app.route('/add_customer', methods=['POST'])       
+def add_customer():
+    """Add new customer"""
+    name = request.form['name']
+    email = request.form['email']
+    phone = request.form['phone']
+    process_id = request.form.get('process_id')
+    
+    conn = get_db_connection()
+    try:
+        # Insert customer
+        cursor = conn.execute(
+            'INSERT INTO customers (name, email, phone) VALUES (?, ?, ?)',
+            (name, email, phone)
+        )
+        customer_id = cursor.lastrowid
+        
+        # Assign to process if selected
+        if process_id:
+            conn.execute(
+                'INSERT INTO process_assignments (customer_id, process_id) VALUES (?, ?)',
+                (customer_id, process_id)
+            )
+        
+        conn.commit()
+        flash('Customer added successfully!', 'success')
+    except sqlite3.IntegrityError:
+        flash('Email already exists!', 'error')
+    finally:
+        conn.close()
+    
+    return redirect(url_for('customers'))
+
+@app.route('/documents')
+def documents():
+    """Document Submission Page"""
+    conn = get_db_connection()
+    
+   # Get customers with their process assignments
+    customers_data = conn.execute('''
+        SELECT c.id, c.name, p.id as process_id, p.name as process_name
+        FROM customers c
+        JOIN process_assignments pa ON c.id = pa.customer_id
+        JOIN processes p ON pa.process_id = p.id
+        WHERE pa.status = 'pending'
+        ORDER BY c.name
+    ''').fetchall()
+
+    # Get document types
+    document_types = conn.execute('SELECT * FROM document_types ORDER BY name').fetchall()
+    
+    # Get recent submissions with more details for status management
+    recent_submissions = conn.execute('''
+        SELECT 
+            ds.id,
+            ds.customer_id,
+            ds.process_id,
+            ds.document_type_id,
+            ds.upload_date,
+            ds.validation_status,
+            ds.file_url,
+            c.name as customer_name,
+            c.email as customer_email,
+            p.name as process_name,
+            dt.name as document_type_name,
+            -- Check if this document is required for the process
+            CASE WHEN pdr.is_required = 1 THEN 'Required' ELSE 'Optional' END as requirement_status
+        FROM document_submissions ds
+        JOIN customers c ON ds.customer_id = c.id
+        JOIN processes p ON ds.process_id = p.id
+        JOIN document_types dt ON ds.document_type_id = dt.id
+        LEFT JOIN process_document_requirements pdr ON ds.process_id = pdr.process_id 
+                                                    AND ds.document_type_id = pdr.document_type_id
+        ORDER BY ds.upload_date DESC
+        LIMIT 20
+    ''').fetchall()
+    
+    conn.close()
+    return render_template('documents.html', 
+                         customers_data=customers_data, 
+                         document_types=document_types,
+                         recent_submissions=recent_submissions)
+
+@app.route('/get_required_documents')
+def get_required_documents():
+    """Get required documents for a process"""
+    process_id = request.args.get('process_id')
+    
+    conn = get_db_connection()
+    required_docs = conn.execute('''
+        SELECT dt.id, dt.name, dt.description, dt.required_fields
+        FROM document_types dt
+        JOIN process_document_requirements pdr ON dt.id = pdr.document_type_id
+        WHERE pdr.process_id = ? AND pdr.is_required = 1
+    ''', (process_id,)).fetchall()
+    conn.close()
+    
+    return jsonify([dict(doc) for doc in required_docs])
+
+@app.route('/submit_document', methods=['POST'])
+def submit_document():
+    """Submit document with proper database connection handling"""
+    customer_id = request.form['customer_id']
+    process_id = request.form['process_id']
+    document_type_id = request.form['document_type_id']
+    file_url = request.form['file_url']
+    extracted_data = request.form['extracted_data']
+    
+    conn = get_db_connection()
+    try:
+        # Parse extracted data as JSON
+        ocr_data = json.loads(extracted_data) if extracted_data else {}
+        
+        # Insert or update document submission
+        conn.execute('''
+            INSERT OR REPLACE INTO document_submissions 
+            (customer_id, process_id, document_type_id, file_url, ocr_extracted_data, validation_status)
+            VALUES (?, ?, ?, ?, ?, 'pending')
+        ''', (customer_id, process_id, document_type_id, file_url, json.dumps(ocr_data)))
+        
+        # Update completion percentage using the same connection
+        calculate_completion_percentage(customer_id, process_id, conn)
+        
+        # Commit all changes together
+        conn.commit()
+        flash('Document submitted successfully!', 'success')
+        
+    except json.JSONDecodeError:
+        flash('Invalid JSON data in extracted fields!', 'error')
+    except Exception as e:
+        flash(f'Error submitting document: {str(e)}', 'error')
+    finally:
+        conn.close()
+    
+    return redirect(url_for('documents'))
+
+@app.route('/dashboard')
+def dashboard():
+    """Status Dashboard"""
+    conn = get_db_connection()
+    
+    # Get all process assignments with customer and process details
+    assignments = conn.execute('''
+        SELECT 
+            pa.id,
+            c.name as customer_name,
+            p.name as process_name,
+            pa.assignment_date,
+            pa.status,
+            pa.completion_percentage,
+            (SELECT COUNT(*) FROM document_submissions ds 
+             WHERE ds.customer_id = pa.customer_id 
+             AND ds.process_id = pa.process_id 
+             AND ds.validation_status = 'approved') as documents_submitted,
+            (SELECT COUNT(*) FROM process_document_requirements pdr 
+             WHERE pdr.process_id = pa.process_id 
+             AND pdr.is_required = 1) as documents_required
+        FROM process_assignments pa
+        JOIN customers c ON pa.customer_id = c.id
+        JOIN processes p ON pa.process_id = p.id
+        ORDER BY pa.assignment_date DESC
+    ''').fetchall()
+    
+    conn.close()
+    return render_template('dashboard.html', assignments=assignments)
+
+@app.route('/update_document_status', methods=['POST'])
+def update_document_status():
+    """Update document validation status and recalculate progress"""
+    try:
+        submission_id = request.form['submission_id']
+        new_status = request.form['new_status']
+        
+        # Validate the new status
+        if new_status not in ['pending', 'approved', 'rejected']:
+            flash('Invalid status provided!', 'error')
+            return redirect(url_for('documents'))
+        
+        conn = get_db_connection()
+        
+        # Get the document submission details first
+        submission = conn.execute('''
+            SELECT customer_id, process_id, validation_status
+            FROM document_submissions 
+            WHERE id = ?
+        ''', (submission_id,)).fetchone()
+        
+        if not submission:
+            flash('Document submission not found!', 'error')
+            return redirect(url_for('documents'))
+        
+        # Update the document status
+        conn.execute('''
+            UPDATE document_submissions 
+            SET validation_status = ?, upload_date = CURRENT_TIMESTAMP
+            WHERE id = ?
+        ''', (new_status, submission_id))
+        
+        # Recalculate completion percentage for this customer-process combination
+        calculate_completion_percentage(submission['customer_id'], submission['process_id'], conn)
+        
+        conn.commit()
+        conn.close()
+        
+        # Create appropriate flash message
+        status_messages = {
+            'approved': 'Document approved successfully!',
+            'pending': 'Document set to pending review.',
+            'rejected': 'Document rejected.'
+        }
+        
+        flash(status_messages.get(new_status, 'Document status updated!'), 'success')
+        
+    except Exception as e:
+        flash(f'Error updating document status: {str(e)}', 'error')
+    
+    return redirect(url_for('documents'))
+
+@app.route('/recalculate_progress')
+def recalculate_progress():
+    """Recalculate completion percentages for all assignments"""
+    conn = get_db_connection()
+    
+    try:
+        # Get all process assignments
+        assignments = conn.execute('''
+            SELECT customer_id, process_id
+            FROM process_assignments
+        ''').fetchall()
+        
+        # Recalculate each assignment using the same connection
+        for assignment in assignments:
+            calculate_completion_percentage(assignment['customer_id'], assignment['process_id'], conn)
+        
+        conn.commit()
+        flash('All completion percentages recalculated!', 'success')
+        
+    except Exception as e:
+        flash(f'Error recalculating progress: {str(e)}', 'error')
+    finally:
+        conn.close()
+    
+    return redirect(url_for('dashboard'))
+
+@app.route('/query')
+def query_interface():
+    """Natural Language Query Interface"""
+    return render_template('query.html')
+
+@app.route('/execute_query', methods=['POST'])
+def execute_query():
+    """Execute natural language query"""
+    nl_query = request.form['query'].strip()
+    
+    try:
+        sql_query = natural_language_to_sql(nl_query)
+        # Try LLM first, fallback to rule-based
+        if not sql_query:
+            sql_query = natural_language_to_sql_with_llm(nl_query)
+        
+        if not sql_query:
+            return jsonify({
+                'error': 'Could not understand the query. Please try rephrasing.',
+                'sql': '',
+                'results': []
+            })
+        
+        conn = get_db_connection()
+        cursor = conn.execute(sql_query)
+        results = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({
+            'sql': sql_query,
+            'results': results,
+            'error': None
+        })
+    
+    except Exception as e:
+        return jsonify({
+            'error': str(e),
+            'sql': sql_query if 'sql_query' in locals() else '',
+            'results': []
+        })
+
+def natural_language_to_sql(query):
+    """Convert natural language query to SQL"""
+    query_lower = query.lower().strip()
+    
+    # Query patterns and their corresponding SQL
+    patterns = [
+        # Pattern 1: Show all customers
+        (r'show all customers?|list all customers?|get all customers?', 
+        'SELECT id, name, email, phone, registration_date FROM customers ORDER BY registration_date DESC'),
+        
+        # Pattern 2: List all pending processes
+        (r'list all pending processes?|show pending processes?|get pending processes?',
+         '''SELECT pa.id, c.name as customer_name, p.name as process_name, 
+            pa.assignment_date, pa.completion_percentage 
+            FROM process_assignments pa 
+            JOIN customers c ON pa.customer_id = c.id 
+            JOIN processes p ON pa.process_id = p.id 
+            WHERE pa.status = 'pending' 
+            ORDER BY pa.assignment_date'''),
+        
+        # Pattern 3: How many documents has [customer] submitted
+        (r'how many documents has (.+?) submitted\??|documents submitted by (.+?)\??',
+         lambda match: f'''SELECT c.name as customer_name, COUNT(ds.id) as documents_submitted
+            FROM customers c 
+            LEFT JOIN document_submissions ds ON c.id = ds.customer_id 
+            WHERE LOWER(c.name) LIKE '%{match.group(1).lower()}%' 
+            GROUP BY c.id, c.name'''),
+        
+        # Pattern 4: Which process has the most documents
+        (r'which process has the most documents\??|process with most documents\??',
+         '''SELECT p.name as process_name, COUNT(ds.id) as document_count
+            FROM processes p 
+            LEFT JOIN document_submissions ds ON p.id = ds.process_id 
+            GROUP BY p.id, p.name 
+            ORDER BY document_count DESC 
+            LIMIT 1'''),
+        
+        # Pattern 5: Which customers are assigned to [process]
+        (r'which customers are assigned to (.+?)\??|customers in (.+?)\??|customers for (.+?)\??',
+         lambda match: f'''SELECT c.name as customer_name, pa.assignment_date, pa.status, pa.completion_percentage
+            FROM customers c 
+            JOIN process_assignments pa ON c.id = pa.customer_id 
+            JOIN processes p ON pa.process_id = p.id 
+            WHERE LOWER(p.name) LIKE '%{match.group(1).lower()}%' 
+            ORDER BY pa.assignment_date'''),
+        
+        # Additional useful patterns
+        (r'show completed processes?|list completed processes?',
+         '''SELECT c.name as customer_name, p.name as process_name, pa.completion_percentage
+            FROM process_assignments pa 
+            JOIN customers c ON pa.customer_id = c.id 
+            JOIN processes p ON pa.process_id = p.id 
+            WHERE pa.status = 'completed' 
+            ORDER BY pa.assignment_date'''),
+        
+        (r'show all processes?|list all processes?',
+         'SELECT id, name, description, status, created_at FROM processes ORDER BY name'),
+        
+        (r'show all document types?|list document types?',
+         'SELECT id, name, description FROM document_types ORDER BY name'),
+        
+        (r'show recent submissions?|recent documents?',
+         '''SELECT c.name as customer_name, p.name as process_name, dt.name as document_type, 
+            ds.upload_date, ds.validation_status
+            FROM document_submissions ds 
+            JOIN customers c ON ds.customer_id = c.id 
+            JOIN processes p ON ds.process_id = p.id 
+            JOIN document_types dt ON ds.document_type_id = dt.id 
+            ORDER BY ds.upload_date DESC 
+            LIMIT 10''')
+    ]
+    
+    # Try to match patterns
+    for pattern, sql_template in patterns:
+        if callable(sql_template):
+            # Pattern with capture groups
+            match = re.search(pattern, query_lower)
+            if match:
+                return sql_template(match)
+        else:
+            # Simple pattern matching
+            if re.search(pattern, query_lower):
+                return sql_template
+    
+    return None
+
+def natural_language_to_sql_with_llm(query):
+    """Convert natural language to SQL using Gemini Pro"""
+    configure()  # Load environment variables
+    if not GOOGLE_API_KEY:
+        return natural_language_to_sql(query)  # fallback function
+
+    try:
+        schema_description = """
+Database Schema:
+- customers: id, name, email, phone, registration_date
+- processes: id, name, description, status, created_at
+- document_types: id, name, description, required_fields
+- process_assignments: id, customer_id, process_id, assignment_date, status, completion_percentage
+- document_submissions: id, customer_id, process_id, document_type_id, upload_date, file_url, ocr_extracted_data, validation_status
+- process_document_requirements: id, process_id, document_type_id, is_required
+"""
+
+        prompt = f"""
+Convert the following natural language query to SQL using the provided database schema.
+Only output the final SQL query without explanations.
+And Do not make any changes to the database and Schema.
+If asked to create a new table or modify existing tables, return an error message.
+
+Query: "{query}"
+
+{schema_description}
+"""
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,)
+        
+        sql_query = response.text.strip()
+
+        # Remove markdown or code block formatting if present
+        sql_query = sql_query.replace('```sql', '').replace('```', '').strip()
+
+        return sql_query
+
+    except Exception as e:
+        print(f"Gemini SQL generation failed: {e}")
+        return natural_language_to_sql(query)
+
+if __name__ == '__main__':
+    # Initialize database if it doesn't exist
+    if not os.path.exists(DATABASE):
+        init_database()
+    
+    app.run(debug=True)
